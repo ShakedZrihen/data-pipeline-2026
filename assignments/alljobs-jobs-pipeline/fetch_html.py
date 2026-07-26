@@ -1,8 +1,22 @@
 import json
-import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
+import dateparser
 import requests
 from bs4 import BeautifulSoup
+
+BASE_URL = (
+    "https://www.alljobs.co.il/SearchResultsGuest.aspx"
+    "?page={page}&position=235&type=&city=&region="
+)
+PAGES = 5
+# Fixed delay between page requests so we don't hammer the live site.
+REQUEST_DELAY_SECONDS = 2
+RAW_HTML_DIR = Path("data/raw")
+OUTPUT_PATH = Path("jobs.json")
 
 HEADERS = {
     "User-Agent": (
@@ -19,12 +33,59 @@ HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 
+SITE_TZ = ZoneInfo("Asia/Jerusalem")
 
-def fetch_html(url: str, output_path: str) -> None:
+# Pin the language so autodetection can't attribute a Hebrew string with Latin
+# digits to another locale. DATE_ORDER matters for the DD/MM/YYYY form: 05/06
+# is ambiguous and the site means 5 June.
+DATEPARSER_SETTINGS = {"DATE_ORDER": "DMY", "PREFER_DATES_FROM": "past"}
+
+
+def _meta_path(html_path: Path) -> Path:
+    return html_path.with_suffix(".meta.json")
+
+
+def fetch_html(url: str, output_path: Path) -> datetime:
+    """Fetch `url` to `output_path` and return the time it was fetched.
+
+    The site reports posting dates relatively ("2 days ago"), so the fetch time
+    is the reference point they're relative to. It's written to a sidecar file
+    next to the HTML: without it, re-parsing saved HTML later would silently
+    shift every timestamp forward.
+    """
     response = requests.get(url, headers=HEADERS, timeout=10)
     response.raise_for_status()
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(response.text)
+    fetched_at = datetime.now(timezone.utc).replace(microsecond=0)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(response.text, encoding="utf-8")
+    _meta_path(output_path).write_text(
+        json.dumps({"url": url, "fetched_at": fetched_at.isoformat()}, indent=2),
+        encoding="utf-8",
+    )
+    return fetched_at
+
+
+def load_fetched_at(html_path: Path) -> datetime:
+    meta = json.loads(_meta_path(html_path).read_text(encoding="utf-8"))
+    return datetime.fromisoformat(meta["fetched_at"])
+
+
+def parse_posted_at(raw: str | None, fetched_at: datetime) -> str | None:
+    """Turn a rendered date string into an ISO-8601 Israeli wall-clock time. """
+    if not raw:
+        return None
+
+    base = fetched_at.astimezone(SITE_TZ).replace(tzinfo=None)
+    parsed = dateparser.parse(
+        raw,
+        languages=["he"],
+        settings={**DATEPARSER_SETTINGS, "RELATIVE_BASE": base},
+    )
+    if parsed is None:
+        return None
+
+    return parsed.replace(tzinfo=SITE_TZ).isoformat()
 
 
 def _find_by_class_prefix(tag, prefix):
@@ -39,9 +100,10 @@ def _text(el):
     return el.get_text(" ", strip=True) if el else None
 
 
-def parse_jobs(html_path: str, output_path: str) -> None:
-    with open(html_path, "r", encoding="utf-8") as f:
-        soup = BeautifulSoup(f.read(), "html.parser")
+def parse_jobs(html_path: Path, fetched_at: datetime | None = None) -> list[dict]:
+    if fetched_at is None:
+        fetched_at = load_fetched_at(html_path)
+    soup = BeautifulSoup(html_path.read_text(encoding="utf-8"), "html.parser")
 
     jobs = []
     for box in soup.find_all("div", class_="job-box"):
@@ -60,9 +122,14 @@ def parse_jobs(html_path: str, output_path: str) -> None:
             box, ("job-content-top-type", "job-content-top-type-ltr")
         )
 
+        time_raw = _text(box.find(class_="job-content-top-date"))
+        posted_at = parse_posted_at(time_raw, fetched_at)
+        if time_raw and posted_at is None:
+            print(f"warning: unrecognised date format {time_raw!r}")
+
         jobs.append(
             {
-                "time": _text(box.find(class_="job-content-top-date")),
+                "time": posted_at,
                 "title": _text(h2),
                 "company": _text(box.find(class_="T14")),
                 "location": _text(location_el),
@@ -71,10 +138,28 @@ def parse_jobs(html_path: str, output_path: str) -> None:
             }
         )
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(jobs, f, ensure_ascii=False, indent=2)
+    return jobs
+
+
+def crawl(pages: int = PAGES, output_path: Path = OUTPUT_PATH) -> list[dict]:
+    jobs = []
+
+    for page in range(1, pages + 1):
+        html_path = RAW_HTML_DIR / f"alljobs_page{page}.html"
+        fetched_at = fetch_html(BASE_URL.format(page=page), html_path)
+        page_jobs = parse_jobs(html_path, fetched_at)
+        jobs.extend(page_jobs)
+        print(f"page {page}: {len(page_jobs)} jobs")
+
+        if page < pages:
+            time.sleep(REQUEST_DELAY_SECONDS)
+
+    output_path.write_text(
+        json.dumps(jobs, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(f"\n{len(jobs)} jobs written to {output_path}")
+    return jobs
 
 
 if __name__ == "__main__":
-    fetch_html("https://www.alljobs.co.il/SearchResultsGuest.aspx?page=1&position=235&type=&city=&region=", "alljobs.html")
-    parse_jobs("alljobs.html", "jobs.json")
+    crawl()
