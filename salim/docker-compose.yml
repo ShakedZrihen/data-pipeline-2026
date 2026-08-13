@@ -55,6 +55,18 @@ services:
       - rabbitmq
       - postgres
 
+  # Syncs the `stores` table from each chain's published store list. Runs to
+  # completion and exits rather than staying up, so `restart: no` keeps compose
+  # from looping it.
+  stores:
+    build:
+      context: .
+      dockerfile: services/stores/Dockerfile
+    env_file: .env
+    restart: "no"
+    depends_on:
+      - postgres
+
   api:
     build:
       context: .
