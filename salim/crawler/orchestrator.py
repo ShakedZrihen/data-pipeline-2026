@@ -10,6 +10,7 @@ from concrete_crawlers.wolt import WoltCrawler
 from concrete_crawlers.hazi_hinam import HaziHinamCrawler
 from concrete_crawlers.victory import VictoryCrawler
 from concrete_crawlers.super_pharm import SuperPharmCrawler
+from concrete_crawlers.tiv_taam import TivTaamCrawler
 
 log = logging.getLogger("salim.crawler.orchestrator")
 
@@ -23,6 +24,7 @@ CRAWLERS: list[type[Crawler]] = [
     WoltCrawler,
     VictoryCrawler,
     SuperPharmCrawler,
+    TivTaamCrawler,
 ]
 
 # crawler name -> source-specific settings, merged with the shared
@@ -52,6 +54,11 @@ CRAWLER_CONFIGS: dict[str, dict] = {
     },
     "super_pharm": {
         "source_url": "http://prices.super-pharm.co.il/",
+    },
+    "tiv_taam": {
+        "source_url": "https://url.publishedprices.co.il/login",
+        "user_name": "TivTaam",
+        "password": "",
     },
 }
 
@@ -100,4 +107,3 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     run()
-
