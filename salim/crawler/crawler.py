@@ -30,9 +30,11 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -47,6 +49,30 @@ log = logging.getLogger("salim.crawler")
 DEFAULT_HEADERS = {
     "User-Agent": "salim-crawler/1.0 (+https://github.com/AlonRR/data-pipeline-2026)",
 }
+
+_NORMALIZED_DATE_LENGTHS = {
+    8: "000000",
+    12: "00",
+    14: "",
+}
+
+
+def normalize_crawl_date(value: str | None) -> str | None:
+    """Normalize YYYYMMDD[/HHMM[/SS]] input to a sortable 14-digit timestamp."""
+    if not value:
+        return None
+
+    digits = re.sub(r"\D", "", value)
+    suffix = _NORMALIZED_DATE_LENGTHS.get(len(digits))
+    if suffix is None:
+        raise ValueError("date must use YYYYMMDD, YYYYMMDDHHMM, or YYYYMMDDHHMMSS")
+    return digits + suffix
+
+
+def inclusive_start_to_exclusive_threshold(value: str) -> str:
+    """Convert an inclusive start date to the exclusive threshold used by new_links."""
+    boundary = datetime.strptime(value, "%Y%m%d%H%M%S") - timedelta(seconds=1)
+    return boundary.strftime("%Y%m%d%H%M%S")
 
 
 # --------------------------------------------------------------------------- #
@@ -218,6 +244,7 @@ class Cacher:
 # --------------------------------------------------------------------------- #
 @dataclass
 class Config:
+    name: str
     source_url: str
     bucket: str
     s3_endpoint: str | None
@@ -228,7 +255,7 @@ class Config:
     link_suffixes: tuple[str, ...] | None
     user_name: str | None = None
     password: str | None = None
-    name: str | None = None  # optional override for logging; defaults to class name
+    start_date: str | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -264,10 +291,11 @@ def load_infra_config() -> InfraConfig:
 class Crawler(ABC):
     """Shared crawl pipeline. Subclasses implement the two source-specific steps."""
 
-    name: str  # unique; must match this crawler's key in orchestrator.CRAWLER_CONFIGS
+    name: str
 
     def __init__(self, config: Config):
         self.config = config
+        self.name = config.name
         self._downloader = Downloader(config.download_dir)
         self._uploader = Uploader(
             config.bucket,
@@ -278,6 +306,19 @@ class Crawler(ABC):
             key_prefix=self.name,
         )
         self._cacher = Cacher(self._uploader.client, config.bucket, self.name)
+
+    def _normalize_threshold_date(self, value: str | None) -> str | None:
+        return normalize_crawl_date(value)
+
+    def _effective_since_date(self, checkpoint_date: str | None) -> str | None:
+        checkpoint = self._normalize_threshold_date(checkpoint_date)
+        start = self._normalize_threshold_date(self.config.start_date)
+
+        if checkpoint is not None and (start is None or checkpoint >= start):
+            return checkpoint
+        if start is not None:
+            return inclusive_start_to_exclusive_threshold(start)
+        return None
 
     # --- source-specific (implement these) --- #
     @abstractmethod
@@ -300,7 +341,7 @@ class Crawler(ABC):
         Returns the list of uploaded S3 keys.
         """
         links, newest_date = self.fetch()
-        since = self._cacher.load()
+        since = self._effective_since_date(self._cacher.load())
         fresh = self.new_links(links, since)
 
         if not fresh:

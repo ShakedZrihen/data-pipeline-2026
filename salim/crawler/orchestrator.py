@@ -1,23 +1,31 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 
 from crawler import Config, Crawler, InfraConfig, load_infra_config
-from concrete_crawlers.shufersal import ShufersalCrawler
-from concrete_crawlers.yohananof import YohananofCrawler
-from concrete_crawlers.wolt import WoltCrawler
+from concrete_crawlers.cerberus import CerberusCrawler
 from concrete_crawlers.hazi_hinam import HaziHinamCrawler
-from concrete_crawlers.victory import VictoryCrawler
+from concrete_crawlers.shufersal import ShufersalCrawler
 from concrete_crawlers.super_pharm import SuperPharmCrawler
+from concrete_crawlers.victory import VictoryCrawler
+from concrete_crawlers.wolt import WoltCrawler
 
 log = logging.getLogger("salim.crawler.orchestrator")
 
 
-# To add a new chain: import its class above, add it to CRAWLERS below, and
-# add its settings to CRAWLER_CONFIGS keyed by the same name as its `.name`.
-CRAWLERS: list[type[Crawler]] = [
-    YohananofCrawler,
+@dataclass(frozen=True)
+class CrawlerRegistration:
+    name: str
+    crawler_cls: type[Crawler]
+
+
+# To add a new chain: add a registration below and add its settings to
+# CRAWLER_CONFIGS keyed by the same registration name.
+CRAWLERS: list[CrawlerRegistration | type[Crawler]] = [
+    CrawlerRegistration(name="yohananof", crawler_cls=CerberusCrawler),
+    CrawlerRegistration(name="rami_levi", crawler_cls=CerberusCrawler),
     HaziHinamCrawler,
     ShufersalCrawler,
     WoltCrawler,
@@ -33,6 +41,11 @@ CRAWLER_CONFIGS: dict[str, dict] = {
     "yohananof": {
         "source_url": "https://url.publishedprices.co.il/login",
         "user_name": "yohananof",
+        "password": "",
+    },
+    "rami_levi": {
+        "source_url": "https://url.publishedprices.co.il/login",
+        "user_name": "RamiLevi",
         "password": "",
     },
     "shufersal": {
@@ -58,7 +71,9 @@ CRAWLER_CONFIGS: dict[str, dict] = {
 
 def _build_config(name: str, settings: dict, infra: InfraConfig) -> Config:
     password = os.environ.get(f"CRAWLER_{name.upper()}_PASSWORD", settings.get("password"))
+    start_date = os.environ.get(f"CRAWLER_{name.upper()}_START_DATE", settings.get("start_date"))
     return Config(
+        name=name,
         source_url=settings["source_url"],
         bucket=infra.bucket,
         s3_endpoint=infra.s3_endpoint,
@@ -69,11 +84,21 @@ def _build_config(name: str, settings: dict, infra: InfraConfig) -> Config:
         link_suffixes=settings.get("link_suffixes"),
         user_name=settings.get("user_name"),
         password=password,
-        name=name
+        start_date=start_date,
     )
 
 
-def run(crawlers: list[type[Crawler]] | None = None) -> dict[str, list[str]]:
+def _registration_for(crawler: CrawlerRegistration | type[Crawler]) -> CrawlerRegistration:
+    if isinstance(crawler, CrawlerRegistration):
+        return crawler
+
+    name = getattr(crawler, "name", None)
+    if not name:
+        raise ValueError(f"crawler class {crawler.__name__} is missing a registration name")
+    return CrawlerRegistration(name=name, crawler_cls=crawler)
+
+
+def run(crawlers: list[CrawlerRegistration | type[Crawler]] | None = None) -> dict[str, list[str]]:
     """Run every registered crawler once.
 
     One crawler failing (e.g. a source changed its login page) is logged and
@@ -82,12 +107,13 @@ def run(crawlers: list[type[Crawler]] | None = None) -> dict[str, list[str]]:
     """
     infra = load_infra_config()
     results: dict[str, list[str]] = {}
-    for crawler_cls in crawlers or CRAWLERS:
-        name = getattr(crawler_cls, "name", crawler_cls.__name__)
+    for crawler in crawlers or CRAWLERS:
+        registration = _registration_for(crawler)
+        name = registration.name
         try:
             settings = CRAWLER_CONFIGS[name]
             cfg = _build_config(name, settings, infra)
-            results[name] = crawler_cls(cfg).run()
+            results[name] = registration.crawler_cls(cfg).run()
         except Exception:
             log.exception("crawler '%s' failed", name)
             results[name] = []
@@ -100,4 +126,3 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     run()
-
