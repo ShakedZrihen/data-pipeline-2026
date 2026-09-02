@@ -3,10 +3,20 @@
 
 from fastapi import FastAPI
 
-app = FastAPI(title="Salim Price API")
+app = FastAPI(
+    title="Salim Price API",
+    description="API for accessing supermarket prices, products and stores.",
+    version="1.0.0",
+)
 
 
-@app.get("/health")
+@app.get(
+    "/health",
+    tags=["Health"],
+    summary="Check API health",
+    description="Returns the current health status of the Salim Price API.",
+    response_description="API health status",
+)
 def health():
     return {"status": "ok"}
 
