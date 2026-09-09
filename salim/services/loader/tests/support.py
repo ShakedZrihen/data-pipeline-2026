@@ -9,8 +9,7 @@ import unittest
 
 from sqlalchemy import text
 
-from shared.db import init_db, make_engine, make_session_factory
-from shared.models import Base
+from shared.db import downgrade, make_engine, make_session_factory, migrate
 
 URL = os.environ.get("TEST_DATABASE_URL")
 
@@ -37,8 +36,8 @@ class PostgresTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.engine = make_engine(URL)
-        Base.metadata.drop_all(cls.engine)
-        init_db(cls.engine)
+        downgrade(cls.engine)
+        migrate(cls.engine)
         cls.sessions = make_session_factory(cls.engine)
 
     def setUp(self):
