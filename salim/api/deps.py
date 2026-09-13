@@ -1,7 +1,7 @@
 """FastAPI dependency wiring for database access.
 
 Expected env var: DATABASE_URL (see shared/db.py). The API only reads;
-tables/RLS are provisioned by the loader service.
+the schema is migrated by the services that write (loader, stores).
 """
 from __future__ import annotations
 

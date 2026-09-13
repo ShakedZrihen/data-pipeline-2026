@@ -40,7 +40,7 @@ from repository import (
     seed_chains,
     upsert_branches,
 )
-from shared.db import init_db, make_engine, make_session_factory
+from shared.db import make_engine, make_session_factory, migrate
 from shared.models import Branch
 from sources.hazi_hinam import HaziHinamStoreSource
 from sources.rami_levi import RamiLeviStoreSource
@@ -158,7 +158,7 @@ def enrich_provider(provider: str, chain_id: str, enricher: Enricher) -> dict[st
 
 def run() -> dict[str, dict]:
     engine = make_engine()
-    init_db(engine)
+    migrate(engine)
     global _session_factory
     _session_factory = make_session_factory(engine)
     skip_enrich = os.environ.get("STORES_SKIP_ENRICH") == "1"

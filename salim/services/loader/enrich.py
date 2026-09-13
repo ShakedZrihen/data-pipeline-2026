@@ -181,10 +181,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("nothing to do; pass --backfill, --reset-attempts and/or --reset-unknown")
 
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    from shared.db import init_db, make_engine, make_session_factory
+    from shared.db import make_engine, make_session_factory, migrate
 
     engine = make_engine()
-    init_db(engine)
+    migrate(engine)
     sessions = make_session_factory(engine)
 
     if args.reset_attempts or args.reset_unknown:

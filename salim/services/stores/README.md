@@ -277,22 +277,7 @@ four locators rather than reasoning about it:
 
 ### Applying this to a database that already has `branches`
 
-`create_all()` creates missing tables; it does **not** add columns to a table
-that already exists. A database where the loader has already created `branches`
-needs these before this service can write to it — otherwise the first insert
-naming `phone` fails with `column does not exist`:
-
-```sql
-ALTER TABLE branches ADD COLUMN IF NOT EXISTS phone VARCHAR(64);
-ALTER TABLE branches ADD COLUMN IF NOT EXISTS city_code VARCHAR(16);
-ALTER TABLE branches ADD COLUMN IF NOT EXISTS store_type VARCHAR(8);
-ALTER TABLE branches ADD COLUMN IF NOT EXISTS source_file VARCHAR(256);
-ALTER TABLE branches ADD COLUMN IF NOT EXISTS enrichment_source VARCHAR(128);
-ALTER TABLE branches ADD COLUMN IF NOT EXISTS enrichment_match VARCHAR(16);
-ALTER TABLE branches ADD COLUMN IF NOT EXISTS enriched_at TIMESTAMP WITH TIME ZONE;
-ALTER TABLE branches ADD COLUMN IF NOT EXISTS fields_not_provided JSONB;
-ALTER TABLE branches ADD COLUMN IF NOT EXISTS first_seen_at TIMESTAMP WITH TIME ZONE DEFAULT now();
-ALTER TABLE branches ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP WITH TIME ZONE;
-```
-
-That is what issue #35 needs against Supabase before its first run.
+Nothing to do by hand.
+The service runs the Alembic history at startup, and migration `0002_branch_store_metadata` adds these columns to a `branches` table the loader created earlier.
+See [Changing the schema](../../README.md#changing-the-schema).
+So the first run against Supabase (#35) needs no preparation: whichever of the loader or this service starts first migrates it.

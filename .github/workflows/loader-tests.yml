@@ -49,6 +49,14 @@ jobs:
       - name: Install loader dependencies
         run: python -m pip install --requirement salim/services/loader/requirements.txt
 
+      # Migration history vs models, adoption of a pre-Alembic database, RLS.
+      - name: Run shared schema tests against Postgres
+        working-directory: salim
+        env:
+          PYTHONPATH: .
+          TEST_DATABASE_URL: postgresql+psycopg2://salim:salim@localhost:5432/salim_test
+        run: python -m unittest discover --start-directory shared/tests --top-level-directory . --verbose
+
       - name: Run loader tests against Postgres
         working-directory: salim/services/loader
         env:

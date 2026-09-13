@@ -82,6 +82,28 @@ services:
       - postgres
     profiles: ["enrich"]
 
+  # Schema tooling on the loader image, run on demand:
+  #   docker compose run --rm migrate history
+  #   docker compose run --rm migrate revision --autogenerate --rev-id 0003 -m "..."
+  # Services migrate themselves at startup, so this is for authoring and
+  # inspecting migrations, not for applying them. The versions directory is
+  # mounted so a generated revision lands in the working tree.
+  migrate:
+    build:
+      context: .
+      dockerfile: services/loader/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    working_dir: /app/shared
+    entrypoint: ["alembic"]
+    command: ["current"]
+    volumes:
+      - ./shared/migrations/versions:/app/shared/migrations/versions
+    depends_on:
+      - postgres
+    profiles: ["migrate"]
+
   api:
     build:
       context: .

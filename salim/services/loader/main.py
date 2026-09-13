@@ -25,7 +25,7 @@ from chains import CHAINS
 from consumer import BatchProcessor
 from enrichment import BrandDictionary
 from repository import Repository
-from shared.db import init_db, make_engine, make_session_factory
+from shared.db import make_engine, make_session_factory, migrate
 
 log = logging.getLogger("salim.loader")
 
@@ -120,7 +120,7 @@ def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("pika").setLevel(logging.WARNING)
     engine = make_engine()
-    init_db(engine)
+    migrate(engine)
     processor = build_processor(make_session_factory(engine))
     consume_forever(processor)
 

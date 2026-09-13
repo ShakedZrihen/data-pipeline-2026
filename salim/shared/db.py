@@ -1,22 +1,27 @@
-"""DB engine/session setup shared by the loader and api services.
+"""DB engine/session setup and schema migration shared by every service.
 
-Expected env var: DATABASE_URL. Schema is created with ``create_all`` on
-service startup; there is no migration tool yet, so changing a column on a
-live database is a manual job (see README).
+Expected env var: DATABASE_URL. The schema is owned by the Alembic history in
+``shared/migrations``; services call ``migrate()`` at startup, and a model
+change without a matching migration fails the drift test in ``shared/tests``.
+See docs/decisions/0002-schema-migrations.md.
 """
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
-from sqlalchemy import create_engine
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.orm import sessionmaker
 
-from shared.models import Base
-
 DEFAULT_DATABASE_URL = "postgresql+psycopg2://salim:salim@postgres:5432/salim"
+ALEMBIC_INI = Path(__file__).with_name("alembic.ini")
+# One key for the whole schema: services that start together migrate in turn.
+SCHEMA_LOCK_KEY = 0x53414C494D
 
 
 def database_url() -> str:
@@ -70,15 +75,28 @@ def make_session_factory(engine: Engine) -> sessionmaker:
     return sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
 
 
-def init_db(engine: Engine) -> None:
-    Base.metadata.create_all(engine)
-    # Supabase exposes the public schema through its Data API. Keep every table
-    # closed to API roles by default; this service writes through the privileged
-    # Postgres connection and does not need an anon/authenticated RLS policy.
+def migrate(engine: Engine, revision: str = "head") -> None:
+    """Bring the schema up to *revision*, serialized across concurrent starters.
+
+    The transaction-scoped advisory lock means two services booting at once
+    do not both try to run the same migration; the second waits and finds
+    nothing left to do.
+    """
+    _run_alembic(engine, command.upgrade, revision)
+
+
+def downgrade(engine: Engine, revision: str = "base") -> None:
+    """Walk the schema back to *revision*. Tests use it to start from nothing."""
+    _run_alembic(engine, command.downgrade, revision)
+
+
+def _run_alembic(engine: Engine, run, revision: str) -> None:
     with engine.begin() as connection:
-        preparer = engine.dialect.identifier_preparer
-        for table in Base.metadata.sorted_tables:
-            table_name = preparer.quote(table.name)
-            if table.schema:
-                table_name = f"{preparer.quote_schema(table.schema)}.{table_name}"
-            connection.exec_driver_sql(f"ALTER TABLE {table_name} ENABLE ROW LEVEL SECURITY")
+        connection.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": SCHEMA_LOCK_KEY})
+        run(_alembic_config(connection), revision)
+
+
+def _alembic_config(connection) -> Config:
+    config = Config(str(ALEMBIC_INI))
+    config.attributes["connection"] = connection
+    return config

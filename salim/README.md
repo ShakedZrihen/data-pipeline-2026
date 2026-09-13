@@ -98,8 +98,8 @@ Both extractor outputs land on the same `prices-q` queue, so each message is dis
 a `promotionId` means a promotion, `itemCode` + `price` means a price item, anything else is poison.
 
 **Tables.**
-They are created with `create_all()` at startup.
-There is no migration tool yet, so a column change on a live database is a manual `ALTER`.
+They are created and changed by the Alembic history in `shared/migrations`, which the loader, enricher and stores service apply at startup.
+See [Changing the schema](#changing-the-schema).
 
 | Table | Key | Holds |
 |---|---|---|
@@ -161,6 +161,43 @@ TEST_DATABASE_URL=postgresql+psycopg2://salim:salim@localhost:5432/salim \
   PYTHONPATH=../.. python -m unittest discover -s tests -t .
 ```
 
+## Changing the schema
+
+The schema is the migration history in `shared/migrations/versions`, not the models alone.
+Services run `alembic upgrade head` when they start, under an advisory lock, so a database is migrated by whichever service reaches it first.
+The decision and its trade-offs are in [`docs/decisions/0002-schema-migrations.md`](../docs/decisions/0002-schema-migrations.md).
+
+To change a table:
+
+1. Edit the model in `shared/models.py`.
+2. Generate the migration against the local database and review it:
+
+   ```bash
+   docker compose run --rm migrate revision --autogenerate --rev-id 0003 -m "add phone to branches"
+   ```
+
+3. For a new table, call `enable_row_level_security("<table>")` from `shared/migrations/rls.py` in `upgrade()`.
+4. Commit the model change and the migration together.
+
+Other commands:
+
+```bash
+docker compose run --rm migrate history   # what exists
+docker compose run --rm migrate current   # what the local database is at
+docker compose run --rm migrate check     # models vs database, read-only
+```
+
+A model edit without a migration fails `shared/tests/test_migrations.py` in CI, naming the difference.
+Run those tests locally the same way as the loader's:
+
+```bash
+cd salim
+TEST_DATABASE_URL=postgresql+psycopg2://salim:salim@localhost:5432/salim \
+  PYTHONPATH=. python -m unittest discover -s shared/tests -t .
+```
+
+A local volume created before the loader landed (PR #57) has tables the history does not describe; reset it with `docker compose down -v`.
+
 ## Deploying to production
 
 Each of `crawler/`, `services/extractor/`, `services/loader/`, and `api/` has its
@@ -186,6 +223,8 @@ being validated. It drains `prices-q` in batches, exits after the queue
 has been idle for 30 seconds, and has a 15-minute safety timeout. If the runner
 is stopped mid-batch, RabbitMQ redelivers those messages because the loader only
 acknowledges them after the database transaction commits.
+The loader also applies any pending schema migration when it starts, so this
+workflow is how Supabase's schema is kept current; no separate step exists.
 
 After a manual run is validated, uncomment the five-minute `schedule` block in
 `.github/workflows/load-queue-to-supabase.yml`.
