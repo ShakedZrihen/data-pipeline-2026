@@ -86,6 +86,26 @@ class ProductOut(BaseModel):
     updated_at: datetime | None = None
 
 
+class PriceSummaryOut(BaseModel):
+    """The span of a product's current prices, so a list view needs no per-row request."""
+
+    min_price: Decimal
+    max_price: Decimal
+    store_count: int
+    chain_count: int
+
+
+class ProductListItemOut(ProductOut):
+    """A catalog product as it appears in a list, with its price span attached.
+
+    ``price_summary`` is null when the product has no row in ``prices`` yet —
+    the catalog is written from price files, but a branch's prices can arrive
+    later than the product metadata.
+    """
+
+    price_summary: PriceSummaryOut | None = None
+
+
 class PriceOut(BaseModel):
     """One chain SKU's current price for a product, in one store."""
 

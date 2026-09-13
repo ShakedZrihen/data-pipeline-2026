@@ -8,9 +8,9 @@ the canonical cross-chain identity described in shared/models.py.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Sequence
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, distinct, func, or_, select, tuple_
 from sqlalchemy.orm import Session, selectinload
 
 from shared.models import Branch, CatalogProduct, Chain, Price, Product, Promotion, PromotionItem
@@ -120,6 +120,31 @@ def list_products(
         )
     stmt = stmt.order_by(CatalogProduct.display_name.asc().nulls_last()).limit(limit).offset(offset)
     return list(session.execute(stmt).scalars().all())
+
+
+def price_summary(session: Session, product_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """Cheapest and priciest current price per product, for the ids given.
+
+    One grouped query for a whole page, rather than a prices call per row.
+    Products with no priced row are absent from the result.
+    """
+    if not product_ids:
+        return {}
+    stmt = (
+        select(
+            Product.catalog_product_id.label("product_id"),
+            func.min(Price.price).label("min_price"),
+            func.max(Price.price).label("max_price"),
+            # A catalog product can own several SKUs per chain, so counting
+            # rows would overstate how many stores actually carry it.
+            func.count(distinct(tuple_(Price.provider, Price.store_id))).label("store_count"),
+            func.count(distinct(Price.provider)).label("chain_count"),
+        )
+        .join(Product, and_(Product.provider == Price.provider, Product.item_code == Price.item_code))
+        .where(Product.catalog_product_id.in_(product_ids), Price.price.isnot(None))
+        .group_by(Product.catalog_product_id)
+    )
+    return {row.product_id: dict(row._mapping) for row in session.execute(stmt)}
 
 
 def get_product(session: Session, product_id: str) -> CatalogProduct | None:
