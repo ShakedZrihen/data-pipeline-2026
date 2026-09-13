@@ -73,7 +73,9 @@ docker compose up --build
 
 - **crawler** — runs on an internal schedule (`CRON_SCHEDULE` env, cron syntax),
   scrapes/downloads source price files, zips them, and uploads the zip to the
-  `raw-prices` bucket.
+  `raw-prices` bucket. A crawler that fails is logged and the others still run,
+  but `orchestrator.py` then exits non-zero, so a scheduled run cannot report
+  success while a source is down.
 - **extractor worker** — every three hours, paginates through `SalimPrices`,
   downloads only objects above each store's watermark, runs
   `prices.py`/`promotions.py`, and publishes persistent JSON messages to

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+import sys
+from dataclasses import dataclass, field
 
 from crawler import Config, Crawler, InfraConfig, load_infra_config
 from concrete_crawlers.cerberus import CerberusCrawler
@@ -19,6 +20,25 @@ log = logging.getLogger("salim.crawler.orchestrator")
 class CrawlerRegistration:
     name: str
     crawler_cls: type[Crawler]
+
+
+@dataclass(frozen=True)
+class RunReport:
+    """Outcome of one orchestrator cycle.
+
+    A crawler that ran to completion is in ``uploaded`` even when it found
+    nothing new; a crawler that raised is only in ``failed``. The two must stay
+    apart: an empty list is a quiet day at the source, a failure is not, and
+    folding them together is how three chains failed on every scheduled run
+    for three weeks while the job stayed green.
+    """
+
+    uploaded: dict[str, list[str]] = field(default_factory=dict)
+    failed: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.failed
 
 
 # To add a new chain: add a registration below and add its settings to
@@ -142,31 +162,46 @@ def selected_crawlers() -> list[CrawlerRegistration | type[Crawler]]:
     return [c for c in CRAWLERS if _registration_for(c).name in selected]
 
 
-def run(crawlers: list[CrawlerRegistration | type[Crawler]] | None = None) -> dict[str, list[str]]:
+def run(crawlers: list[CrawlerRegistration | type[Crawler]] | None = None) -> RunReport:
     """Run every registered crawler once.
 
     One crawler failing (e.g. a source changed its login page) is logged and
-    skipped rather than aborting the rest. Returns each crawler's uploaded S3
-    keys, keyed by crawler name.
+    the rest still run; the failure is recorded in the report rather than
+    swallowed.
     """
     infra = load_infra_config()
-    results: dict[str, list[str]] = {}
+    report = RunReport()
     for crawler in crawlers if crawlers is not None else selected_crawlers():
         registration = _registration_for(crawler)
         name = registration.name
         try:
             settings = CRAWLER_CONFIGS[name]
             cfg = _build_config(name, settings, infra)
-            results[name] = registration.crawler_cls(cfg).run()
+            report.uploaded[name] = registration.crawler_cls(cfg).run()
         except Exception:
             log.exception("crawler '%s' failed", name)
-            results[name] = []
-    return results
+            report.failed.append(name)
+    return report
 
 
-if __name__ == "__main__":
+def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    run()
+    report = run()
+    files = sum(len(keys) for keys in report.uploaded.values())
+    log.info(
+        "run complete: %d crawler(s) ok, %d failed, %d file(s) uploaded",
+        len(report.uploaded), len(report.failed), files,
+    )
+    if not report.ok:
+        # The exit code is all a scheduled job reports; a failure that does
+        # not reach it is invisible from the Actions tab.
+        log.error("failed crawler(s): %s", ", ".join(report.failed))
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

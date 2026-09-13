@@ -142,10 +142,11 @@ class OrchestratorTests(unittest.TestCase):
         ]
 
         with patch("orchestrator.load_infra_config", return_value=self._infra()):
-            results = orchestrator.run(registrations)
+            report = orchestrator.run(registrations)
 
+        self.assertEqual(report.failed, [])
         self.assertEqual(
-            results,
+            report.uploaded,
             {
                 "yohananof": ["yohananof-result"],
                 "rami_levi": ["rami_levi-result"],
@@ -162,10 +163,6 @@ class OrchestratorTests(unittest.TestCase):
         self.assertTrue(str(tiv_taam.config.download_dir).endswith("tiv_taam"))
         self.assertEqual(tiv_taam.config.user_name, "TivTaam")
         self.assertEqual(tiv_taam.config.password, "")
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class SelectedCrawlersTests(unittest.TestCase):
@@ -236,6 +233,94 @@ class SelectedCrawlersTests(unittest.TestCase):
         with patch.object(orchestrator, "CRAWLERS", registrations), \
              patch.object(orchestrator, "load_infra_config", return_value=self._infra()), \
              patch.dict(os.environ, {"CRAWLER_PROVIDERS": "rami_levi"}, clear=False):
-            results = orchestrator.run()
+            report = orchestrator.run()
 
-        self.assertEqual(list(results), ["rami_levi"])
+        self.assertEqual(list(report.uploaded), ["rami_levi"])
+
+
+class _FailingCrawler(CerberusCrawler):
+    def run(self) -> list[str]:
+        raise RuntimeError("login page changed")
+
+
+class _QuietCrawler(CerberusCrawler):
+    def run(self) -> list[str]:
+        return []
+
+
+class RunReportTests(unittest.TestCase):
+    """A failed crawler and a crawler with nothing new are different outcomes.
+
+    Until now both came back as ``[]``, and ``__main__`` exited 0 regardless,
+    so a scheduled run stayed green for three weeks while three of eight
+    sources failed on every run (#61). The report keeps the two apart and the
+    entry point turns failures into a non-zero exit.
+    """
+
+    def _infra(self) -> InfraConfig:
+        return InfraConfig(
+            bucket="raw-prices",
+            s3_endpoint=None,
+            s3_access_key=None,
+            s3_secret_key=None,
+            s3_region=None,
+            download_dir=Path(tempfile.mkdtemp()) / "downloads",
+        )
+
+    def _run(self, registrations):
+        with patch("orchestrator.load_infra_config", return_value=self._infra()):
+            return orchestrator.run(registrations)
+
+    def test_a_failing_crawler_is_reported_as_failed_not_as_empty(self):
+        report = self._run([
+            orchestrator.CrawlerRegistration(name="yohananof", crawler_cls=_FailingCrawler),
+        ])
+        self.assertEqual(report.failed, ["yohananof"])
+        self.assertNotIn("yohananof", report.uploaded)
+        self.assertFalse(report.ok)
+
+    def test_a_crawler_with_nothing_new_is_a_success(self):
+        report = self._run([
+            orchestrator.CrawlerRegistration(name="yohananof", crawler_cls=_QuietCrawler),
+        ])
+        self.assertEqual(report.uploaded, {"yohananof": []})
+        self.assertEqual(report.failed, [])
+        self.assertTrue(report.ok)
+
+    def test_one_failure_does_not_stop_the_remaining_crawlers(self):
+        _RecordingCrawler.instances.clear()
+        report = self._run([
+            orchestrator.CrawlerRegistration(name="yohananof", crawler_cls=_FailingCrawler),
+            orchestrator.CrawlerRegistration(name="rami_levi", crawler_cls=_RecordingCrawler),
+        ])
+        self.assertEqual(report.failed, ["yohananof"])
+        self.assertEqual(report.uploaded, {"rami_levi": ["rami_levi-result"]})
+
+    def test_a_missing_configuration_is_a_failure_of_that_crawler_only(self):
+        report = self._run([
+            orchestrator.CrawlerRegistration(name="not_configured", crawler_cls=_RecordingCrawler),
+            orchestrator.CrawlerRegistration(name="rami_levi", crawler_cls=_RecordingCrawler),
+        ])
+        self.assertEqual(report.failed, ["not_configured"])
+        self.assertEqual(list(report.uploaded), ["rami_levi"])
+
+
+class MainExitStatusTests(unittest.TestCase):
+    """The process exit code is the only thing GitHub Actions looks at."""
+
+    def test_exits_nonzero_when_any_crawler_failed(self):
+        report = orchestrator.RunReport(
+            uploaded={"wolt": ["a.gz"], "shufersal": []},
+            failed=["hazi_hinam", "victory"],
+        )
+        with patch("orchestrator.run", return_value=report):
+            self.assertEqual(orchestrator.main(), 1)
+
+    def test_exits_zero_when_every_crawler_completed(self):
+        report = orchestrator.RunReport(uploaded={"wolt": [], "shufersal": ["a.gz"]}, failed=[])
+        with patch("orchestrator.run", return_value=report):
+            self.assertEqual(orchestrator.main(), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
