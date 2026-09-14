@@ -1,0 +1,41 @@
+# Local-only overrides. This file is untracked, so nothing here leaks into the
+# shared docker-compose.yml or .env.example.
+#
+# It exists because the committed config does not line up for a local run:
+#
+#   1. The crawler and extractor read S3_BUCKET=SalimPrices from .env.example.
+#      S3 bucket names must be lowercase, and MinIO enforces that, so the
+#      crawler cannot create the bucket it is told to upload to.
+#   2. The loader reads RABBITMQ_QUEUE from .env, which still says `raw-prices`,
+#      while the extractor publishes to `prices-q` from .env.example. The
+#      pipeline would run end to end and quietly move nothing.
+#   3. All eight crawlers on a cold checkpoint is hours of downloading
+#      (Shufersal alone is ~880 files), which is not what we want to prove.
+#
+# `environment:` wins over `env_file:`, which is what makes this work.
+services:
+  crawler:
+    environment:
+      S3_BUCKET: salim-prices
+      # Yochananof is the one chain with both a crawler and a stores source, so
+      # it is the only single choice that yields named branches in the UI rather
+      # than bare store ids. Its Cerberus login is public (empty password).
+      CRAWLER_PROVIDERS: yohananof
+      # Inclusive on the first run. Widen by a day if the chain has not
+      # published yet today.
+      CRAWLER_YOHANANOF_START_DATE: "20260913"
+      # The committed schedule is every 6 hours. A crawl that starts before
+      # MinIO is accepting connections would otherwise leave us waiting for it.
+      CRON_SCHEDULE: "*/30 * * * *"
+
+  extractor:
+    build:
+      context: services/extractor
+      dockerfile: Dockerfile
+    environment:
+      S3_BUCKET: salim-prices
+      RABBITMQ_QUEUE: prices-q
+
+  loader:
+    environment:
+      RABBITMQ_QUEUE: prices-q

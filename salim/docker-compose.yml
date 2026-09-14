@@ -115,6 +115,16 @@ services:
       - "${API_PORT:-8000}:8000"
     depends_on:
       - postgres
+
+  # Static React build served by nginx, which also proxies /api to the api
+  # service so the browser sees one origin and needs no CORS grant.
+  ui:
+    build:
+      context: ./ui
+    ports:
+      - "${UI_PORT:-3000}:80"
+    depends_on:
+      - api
       
   # Syncs the `stores` table from each chain's published store list. Runs to
   # completion and exits rather than staying up, so `restart: no` keeps compose

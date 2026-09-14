@@ -1,18 +1,38 @@
 # FastAPI read API over the prices and stores data.
-# Expected env var: DATABASE_URL
+# Expected env vars: DATABASE_URL, UI_ORIGINS
 
 from __future__ import annotations
 
+import os
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from api import repository as repo
 from api.deps import get_session
-from api.schemas import PriceOut, ProductOut, ProductPromotionsOut, StoreDetailOut, StoreListOut
+from api.schemas import (
+    PriceOut,
+    ProductListItemOut,
+    ProductOut,
+    ProductPromotionsOut,
+    StoreDetailOut,
+    StoreListOut,
+)
+
+DEFAULT_UI_ORIGINS = "http://localhost:5173,http://localhost:4173"
 
 app = FastAPI(title="Salim Price API")
+
+# The UI runs on its own origin, so without these response headers the browser
+# fetches successfully and then refuses to hand the body to JavaScript.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in os.environ.get("UI_ORIGINS", DEFAULT_UI_ORIGINS).split(",") if o.strip()],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
@@ -57,7 +77,7 @@ def get_store(store_id: str, session: Session = Depends(get_session)):
     return store
 
 
-@app.get("/products", response_model=list[ProductOut])
+@app.get("/products", response_model=list[ProductListItemOut])
 def list_products(
     q: str | None = Query(None, description="Search product name or slug"),
     manufacturer: str | None = Query(None, description="Exact manufacturer match (case-insensitive)"),
@@ -66,9 +86,18 @@ def list_products(
     offset: int = Query(0, ge=0),
     session: Session = Depends(get_session),
 ):
-    return repo.list_products(
+    """Catalog products, each with the span of its current prices."""
+    products = repo.list_products(
         session, q=q, manufacturer=manufacturer, has_promotion=has_promotion, limit=limit, offset=offset
     )
+    summaries = repo.price_summary(session, [product.product_id for product in products])
+    return [
+        ProductListItemOut(
+            **ProductOut.model_validate(product).model_dump(),
+            price_summary=summaries.get(product.product_id),
+        )
+        for product in products
+    ]
 
 
 @app.get("/products/{product_id}", response_model=ProductOut)
